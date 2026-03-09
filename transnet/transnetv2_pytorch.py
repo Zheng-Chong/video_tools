@@ -6,7 +6,6 @@ import random
 
 
 class TransNetV2(nn.Module):
-
     def __init__(self,
                  F=16, L=3, S=2, D=1024,
                  use_many_hot_targets=True,
@@ -14,14 +13,14 @@ class TransNetV2(nn.Module):
                  use_color_histograms=True,
                  use_mean_pooling=False,
                  dropout_rate=0.5,
-                 use_convex_comb_reg=False,  # not supported
-                 use_resnet_features=False,  # not supported
-                 use_resnet_like_top=False,  # not supported
-                 frame_similarity_on_last_layer=False):  # not supported
+                 use_convex_comb_reg=False,  
+                 use_resnet_features=False,  
+                 use_resnet_like_top=False,  
+                 frame_similarity_on_last_layer=False):  
         super(TransNetV2, self).__init__()
 
         if use_resnet_features or use_resnet_like_top or use_convex_comb_reg or frame_similarity_on_last_layer:
-            raise NotImplemented("Some options not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Some options not implemented in Pytorch version of Transnet!")
 
         self.SDDCNN = nn.ModuleList(
             [StackedDDCNNV2(in_filters=3, n_blocks=S, filters=F, stochastic_depth_drop_prob=0.)] +
@@ -51,8 +50,9 @@ class TransNetV2(nn.Module):
     def forward(self, inputs):
         assert isinstance(inputs, torch.Tensor) and list(inputs.shape[2:]) == [27, 48, 3] and inputs.dtype == torch.uint8, \
             "incorrect input type and/or shape"
-        # uint8 of shape [B, T, H, W, 3] to float of shape [B, 3, T, H, W]
-        x = inputs.permute([0, 4, 1, 2, 3]).float()
+            
+        # [OPTIMIZED] 增加 .contiguous() 确保内存连续性，加速后续访存
+        x = inputs.permute([0, 4, 1, 2, 3]).contiguous().float()
         x = x.div_(255.)
 
         block_features = []
@@ -86,27 +86,32 @@ class TransNetV2(nn.Module):
 
         return one_hot
 
-
     @staticmethod
     def predictions_to_scenes(predictions: np.ndarray, threshold: float = 0.5):
-        predictions = (predictions > threshold).astype(np.uint8)
+        # [FIXED] 将 uint8 改为 int8，防止 np.diff 计算 0 - 1 时发生下溢出变成 255
+        predictions = (predictions > threshold).astype(np.int8)
 
-        scenes = []
-        t, t_prev, start = -1, 0, 0
-        for i, t in enumerate(predictions):
-            if t_prev == 1 and t == 0:
-                start = i
-            if t_prev == 0 and t == 1 and i != 0:
-                scenes.append([start, i])
-            t_prev = t
-        if t == 0:
-            scenes.append([start, i])
+        if len(predictions) == 0:
+            return np.array([], dtype=np.int32)
 
-        # just fix if all predictions are 1
-        if len(scenes) == 0:
+        diff = np.diff(predictions)
+        
+        # 寻找状态改变的索引
+        starts = np.where(diff == -1)[0] + 1
+        ends = np.where(diff == 1)[0] + 1
+        
+        # 处理边界情况
+        if predictions[0] == 0:
+            starts = np.insert(starts, 0, 0)
+        if predictions[-1] == 0:
+            ends = np.append(ends, len(predictions) - 1)
+            
+        # 兼容原始逻辑：如果全是 1 (没有场景)
+        if len(starts) == 0:
             return np.array([[0, len(predictions) - 1]], dtype=np.int32)
-
-        return np.array(scenes, dtype=np.int32)
+            
+        scenes = np.column_stack((starts, ends))
+        return scenes.astype(np.int32)
 
     @staticmethod
     def visualize_predictions(frames: np.ndarray, predictions):
@@ -118,8 +123,6 @@ class TransNetV2(nn.Module):
         ih, iw, ic = frames.shape[1:]
         width = 25
 
-        # pad frames so that length of the video is divisible by width
-        # pad frames also by len(predictions) pixels in width in order to show predictions
         pad_with = width - len(frames) % width if len(frames) % width != 0 else 0
         frames = np.pad(frames, [(0, pad_with), (0, 1), (0, len(predictions)), (0, 0)])
 
@@ -134,12 +137,10 @@ class TransNetV2(nn.Module):
         img = Image.fromarray(img)
         draw = ImageDraw.Draw(img)
 
-        # iterate over all frames
         for i, pred in enumerate(zip(*predictions)):
             x, y = i % width, i // width
             x, y = x * (iw + len(predictions)) + iw, y * (ih + 1) + ih - 1
 
-            # we can visualize multiple predictions per single frame
             for j, p in enumerate(pred):
                 color = [0, 0, 0]
                 color[(j + 1) % 3] = 255
@@ -149,20 +150,20 @@ class TransNetV2(nn.Module):
                     draw.line((x + j, y, x + j, y - value), fill=tuple(color), width=1)
         return img
 
-class StackedDDCNNV2(nn.Module):
 
+class StackedDDCNNV2(nn.Module):
     def __init__(self,
                  in_filters,
                  n_blocks,
                  filters,
                  shortcut=True,
-                 use_octave_conv=False,  # not supported
+                 use_octave_conv=False,  
                  pool_type="avg",
                  stochastic_depth_drop_prob=0.0):
         super(StackedDDCNNV2, self).__init__()
 
         if use_octave_conv:
-            raise NotImplemented("Octave convolution not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Octave convolution not implemented in Pytorch version of Transnet!")
 
         assert pool_type == "max" or pool_type == "avg"
         if use_octave_conv and pool_type == "max":
@@ -204,17 +205,16 @@ class StackedDDCNNV2(nn.Module):
 
 
 class DilatedDCNNV2(nn.Module):
-
     def __init__(self,
                  in_filters,
                  filters,
                  batch_norm=True,
                  activation=None,
-                 octave_conv=False):  # not supported
+                 octave_conv=False):  
         super(DilatedDCNNV2, self).__init__()
 
         if octave_conv:
-            raise NotImplemented("Octave convolution not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Octave convolution not implemented in Pytorch version of Transnet!")
 
         assert not (octave_conv and batch_norm)
 
@@ -244,26 +244,24 @@ class DilatedDCNNV2(nn.Module):
 
 
 class Conv3DConfigurable(nn.Module):
-
     def __init__(self,
                  in_filters,
                  filters,
                  dilation_rate,
                  separable=True,
-                 octave=False,  # not supported
+                 octave=False,  
                  use_bias=True,
-                 kernel_initializer=None):  # not supported
+                 kernel_initializer=None):  
         super(Conv3DConfigurable, self).__init__()
 
         if octave:
-            raise NotImplemented("Octave convolution not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Octave convolution not implemented in Pytorch version of Transnet!")
         if kernel_initializer is not None:
-            raise NotImplemented("Kernel initializers are not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Kernel initializers are not implemented in Pytorch version of Transnet!")
 
         assert not (separable and octave)
 
         if separable:
-            # (2+1)D convolution https://arxiv.org/pdf/1711.11248.pdf
             conv1 = nn.Conv3d(in_filters, 2 * filters, kernel_size=(1, 3, 3),
                               dilation=(1, 1, 1), padding=(0, 1, 1), bias=False)
             conv2 = nn.Conv3d(2 * filters, filters, kernel_size=(3, 1, 1),
@@ -282,18 +280,17 @@ class Conv3DConfigurable(nn.Module):
 
 
 class FrameSimilarity(nn.Module):
-
     def __init__(self,
                  in_filters,
                  similarity_dim=128,
                  lookup_window=101,
                  output_dim=128,
-                 stop_gradient=False,  # not supported
+                 stop_gradient=False,  
                  use_bias=False):
         super(FrameSimilarity, self).__init__()
 
         if stop_gradient:
-            raise NotImplemented("Stop gradient not implemented in Pytorch version of Transnet!")
+            raise NotImplementedError("Stop gradient not implemented in Pytorch version of Transnet!")
 
         self.projection = nn.Linear(in_filters, similarity_dim, bias=use_bias)
         self.fc = nn.Linear(lookup_window, output_dim)
@@ -309,22 +306,24 @@ class FrameSimilarity(nn.Module):
         x = functional.normalize(x, p=2, dim=2)
 
         batch_size, time_window = x.shape[0], x.shape[1]
-        similarities = torch.bmm(x, x.transpose(1, 2))  # [batch_size, time_window, time_window]
-        similarities_padded = functional.pad(similarities, [(self.lookup_window - 1) // 2, (self.lookup_window - 1) // 2])
-
-        batch_indices = torch.arange(0, batch_size, device=x.device).view([batch_size, 1, 1]).repeat(
-            [1, time_window, self.lookup_window])
-        time_indices = torch.arange(0, time_window, device=x.device).view([1, time_window, 1]).repeat(
-            [batch_size, 1, self.lookup_window])
-        lookup_indices = torch.arange(0, self.lookup_window, device=x.device).view([1, 1, self.lookup_window]).repeat(
-            [batch_size, time_window, 1]) + time_indices
-
-        similarities = similarities_padded[batch_indices, time_indices, lookup_indices]
+        similarities = torch.bmm(x, x.transpose(1, 2))  
+        
+        # [OPTIMIZED] 使用 as_strided 提取对角线滑动窗口，取代高昂开销的高级索引
+        pad_size = (self.lookup_window - 1) // 2
+        similarities_padded = functional.pad(similarities, [pad_size, pad_size])
+        similarities_padded = similarities_padded.contiguous()
+        
+        stride_b, stride_t, stride_l = similarities_padded.stride()
+        similarities = torch.as_strided(
+            similarities_padded,
+            size=(batch_size, time_window, self.lookup_window),
+            stride=(stride_b, stride_t + stride_l, stride_l)
+        )
+        
         return functional.relu(self.fc(similarities))
 
 
 class ColorHistograms(nn.Module):
-
     def __init__(self,
                  lookup_window=101,
                  output_dim=None):
@@ -339,7 +338,6 @@ class ColorHistograms(nn.Module):
         frames = frames.int()
 
         def get_bin(frames):
-            # returns 0 .. 511
             R, G, B = frames[:, :, 0], frames[:, :, 1], frames[:, :, 2]
             R, G, B = R >> 5, G >> 5, B >> 5
             return (R << 6) + (G << 3) + B
@@ -363,17 +361,19 @@ class ColorHistograms(nn.Module):
         x = self.compute_color_histograms(inputs)
 
         batch_size, time_window = x.shape[0], x.shape[1]
-        similarities = torch.bmm(x, x.transpose(1, 2))  # [batch_size, time_window, time_window]
-        similarities_padded = functional.pad(similarities, [(self.lookup_window - 1) // 2, (self.lookup_window - 1) // 2])
-
-        batch_indices = torch.arange(0, batch_size, device=x.device).view([batch_size, 1, 1]).repeat(
-            [1, time_window, self.lookup_window])
-        time_indices = torch.arange(0, time_window, device=x.device).view([1, time_window, 1]).repeat(
-            [batch_size, 1, self.lookup_window])
-        lookup_indices = torch.arange(0, self.lookup_window, device=x.device).view([1, 1, self.lookup_window]).repeat(
-            [batch_size, time_window, 1]) + time_indices
-
-        similarities = similarities_padded[batch_indices, time_indices, lookup_indices]
+        similarities = torch.bmm(x, x.transpose(1, 2))  
+        
+        # [OPTIMIZED] 同样应用 as_strided 优化技巧
+        pad_size = (self.lookup_window - 1) // 2
+        similarities_padded = functional.pad(similarities, [pad_size, pad_size])
+        similarities_padded = similarities_padded.contiguous()
+        
+        stride_b, stride_t, stride_l = similarities_padded.stride()
+        similarities = torch.as_strided(
+            similarities_padded,
+            size=(batch_size, time_window, self.lookup_window),
+            stride=(stride_b, stride_t + stride_l, stride_l)
+        )
 
         if self.fc is not None:
             return functional.relu(self.fc(similarities))

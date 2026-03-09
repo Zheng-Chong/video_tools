@@ -5,3 +5,4 @@ process_filtered_samples.py
 **/__pycache__/**
 **/__pycache__
 test.py
+*.mp4

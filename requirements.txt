@@ -4,3 +4,4 @@ torchaudio
 huggingface_hub
 tqdm
 numpy
+whisperx
