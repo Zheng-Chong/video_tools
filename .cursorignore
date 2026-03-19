@@ -1,13 +1,10 @@
 Datasets
 Models
 output
-process_filtered_samples.py 
+process_filtered_samples.py
 **/__pycache__/**
 **/__pycache__
-test.py
 *.mp4
 asd_workspace
 .venv
 checkpoints
-*pt
-.codex-sync/
